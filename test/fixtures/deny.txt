@@ -1,0 +1,2 @@
+# fake employer and client names for the redaction test
+Globex

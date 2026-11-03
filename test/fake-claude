@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+// Stands in for `claude -p` in tests. Fails unless called with the clean flags, env, and cwd.
+'use strict';
+const fs = require('node:fs'), path = require('node:path');
+const a = process.argv.slice(2);
+const fail = (m) => { process.stderr.write(`fake-claude: ${m}\n`); process.exit(3); };
+const val = (flag) => { const i = a.indexOf(flag); if (i < 0) fail(`missing ${flag}`); return a[i + 1]; };
+if (a.includes('--version')) { process.stdout.write('9.9.9 (Fake Claude)\n'); process.exit(0); }
+for (const f of ['--disable-slash-commands', '--strict-mcp-config', '--no-session-persistence']) if (!a.includes(f)) fail(`missing ${f}`);
+if (val('--tools') !== '' || val('--setting-sources') !== '') fail('tools and setting sources must be empty');
+if (!val('--model')) fail('missing model');
+// Only sign-in, provider and network settings may come through. macOS adds __CF_ itself.
+const extra = Object.keys(process.env).filter((k) => !k.startsWith('__CF_') && !['HOME', 'PATH', 'TERM', 'USER'].includes(k)
+  && !/^(ANTHROPIC_\w+|CLAUDE_CODE_USE_\w+|CLAUDE_CODE_SKIP_\w+|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CONFIG_DIR|AWS_\w+|GOOGLE_APPLICATION_CREDENTIALS|GOOGLE_CLOUD_PROJECT|CLOUD_ML_REGION|VERTEX_REGION_\w+|HTTPS?_PROXY|NO_PROXY|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SSL_CERT_DIR)$/i.test(k));
+if (extra.length || process.env.TERM !== 'dumb') fail(`env not stripped: ${extra.join(',')}`);
+if (path.basename(process.cwd()) !== '.clean-cwd' || fs.readdirSync(process.cwd()).length) fail('cwd must be the empty .clean-cwd');
+if (a[a.indexOf('-p') + 1] !== '--system-prompt-file') fail('prompt must come on stdin, not the command line');
+const prompt = fs.readFileSync(0, 'utf8'), system = fs.readFileSync(val('--system-prompt-file'), 'utf8');
+const outDir = path.dirname(process.cwd());
+const ctl = fs.existsSync(path.join(outDir, 'fake.json')) ? JSON.parse(fs.readFileSync(path.join(outDir, 'fake.json'), 'utf8')) : {};
+const log = (mode) => fs.appendFileSync(path.join(outDir, 'fake-log.txt'), mode + '\n');
+if (process.env.ANTHROPIC_API_KEY) fs.appendFileSync(path.join(outDir, 'fake-env.txt'), 'api key passed\n');
+
+if (system.startsWith('Reply with the single word OK')) {
+  if (ctl.preflight) { process.stdout.write(ctl.preflight + '\n'); process.exit(1); }
+  process.stdout.write('OK'); process.exit(0);
+}
+
+if (system.startsWith('You rewrite')) {
+  log('neutralize');
+  if (ctl.neutralizeFail) { process.stdout.write('Claude usage limit reached.\n'); process.exit(1); }
+  // echoes the wording; on the second attempt pads options to equal length
+  const rows = JSON.parse(prompt.slice(prompt.indexOf('[')));
+  process.stdout.write(JSON.stringify(rows.map(({ n, question, options, last_try_failed }) => {
+    const len = Math.max(...options.map((o) => o.length));
+    return { n, question, options: last_try_failed ? options.map((o) => o.padEnd(len, '.')) : options };
+  })));
+} else if (system.includes('one short reason')) {
+  if (prompt.startsWith('Quote the first line') && prompt.includes('Leave out a block')) { log('context-again'); process.stdout.write(ctl.context2 ?? 'NONE'); process.exit(0); }
+  if (prompt.startsWith('Quote the first line')) { log('context'); process.stdout.write(ctl.context ?? 'NONE'); process.exit(0); }
+  if (prompt.startsWith('What projects')) { log('canary'); process.stdout.write(ctl.canary ?? 'NONE'); process.exit(0); }
+  const withSkill = system.startsWith('---');
+  log(withSkill ? 'predict-with' : 'predict-no');
+  const keyFile = path.join(outDir, 'test', 'key.json');
+  if (!fs.existsSync(keyFile)) fail('prediction ran before key.json was written');
+  // with skill answers from the key; no history always says A
+  const key = JSON.parse(fs.readFileSync(keyFile, 'utf8')).answers;
+  process.stdout.write(key.map((k, i) => (withSkill ? `${i + 1}: ${k.answer} | fits the skill` : `**${i + 1}**: A. a guess`)).join('\n') + '\n');
+} else if (system.startsWith('You classify')) {
+  log('classify');
+  const ids = [...prompt.matchAll(/"id": "(c_\d+)"/g)].map((m) => m[1]);
+  process.stdout.write('```json\n' + JSON.stringify(ids.map((id) => ({ id, verdict: {
+    kind: 'visual', judged: 'How should the card header be treated?', options: ['A soft gradient wash', 'A flat ink panel'],
+    pick: 1, reason: 'the mark felt heavy', polarity: 'pick', confidence: 0.9 } }))) + '\n```\n');
+} else {
+  const ids = [...prompt.matchAll(/"id":"(v_\d+)"/g)].map((m) => m[1]);
+  process.stdout.write(['---', 'name: my-taste', 'description: test skill', '---', '# Calibration', 'Plain.', '# Hard bans',
+    '### Heavy header marks', '- Passes when: the header is flat', '- Fails when: a mark dominates', '- Evidence: 2 verdicts',
+    `- Ids: ${ids.join(', ')}, v_0099`, '# Positive laws', '# Context rules', '# Seen once', ''].join('\n'));
+}

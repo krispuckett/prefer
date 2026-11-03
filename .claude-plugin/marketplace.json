@@ -1,0 +1,16 @@
+{
+  "name": "prefer",
+  "owner": {
+    "name": "Kris Puckett"
+  },
+  "metadata": {
+    "description": "Prefer, a taste finding skill for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "prefer",
+      "source": "./",
+      "description": "Reads your own Claude Code history, finds the moments you judged design work, writes your taste into a skill, and tests that skill blind."
+    }
+  ]
+}
